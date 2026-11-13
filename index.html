@@ -4,6 +4,17 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="description" content="Generator cover produk 1:1 (1200x1200): kode produk, foto warna, harga coret, harga benar, size, dan logo.">
+<script>
+/* ===== PENGATURAN GOOGLE DRIVE (opsional) =====
+   Isi dua baris ini supaya daftar kode produk dibaca dari folder Drive.
+   driveApiKey   : API key dari Google Cloud Console (Drive API aktif, dibatasi ke alamat web ini)
+   driveFolderId : link folder Drive atau ID-nya (folder dibagikan "Siapa saja yang memiliki link")
+   Kosongkan keduanya kalau tidak memakai Drive. */
+window.COVER_CONFIG = {
+  driveApiKey: 'AIzaSyC9HcLn2j3bNgWL_YHV8MbmSxrg2gufnr0',
+  driveFolderId: '1yvfVMgVwU4F1RmHiNqLBzyQI0BklX4LN'
+};
+</script>
 <style>:root{color-scheme:light;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}body{margin:0;font:14px system-ui}[hidden]{display:none!important}img{max-width:100%}</style>
 <title>Generator Cover Harga</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -50,12 +61,13 @@ b,strong,h1,h2{font-weight:400}
 .lcd-btn:hover:not(:disabled){border-color:var(--ink);color:var(--ink);background:#fafaf8}
 .lcd-btn:disabled{opacity:.3;cursor:default}
 .lcd-btn svg{width:20px;height:20px}
-.sug{position:absolute;left:0;right:0;top:100%;z-index:8;display:grid;gap:2px;margin-top:8px;padding:6px;border:1px solid var(--line-2);border-radius:14px;background:#fff;box-shadow:0 18px 34px -12px rgba(0,0,0,.28)}
+.sug{position:absolute;left:0;right:0;top:100%;z-index:8;display:grid;gap:2px;margin-top:8px;padding:6px;max-height:min(320px,50vh);overflow:auto;border:1px solid var(--line-2);border-radius:14px;background:#fff;box-shadow:0 18px 34px -12px rgba(0,0,0,.28)}
 .sug button,.sug p{display:flex;align-items:center;justify-content:space-between;gap:12px;width:100%;margin:0;padding:10px 12px;border:0;border-radius:9px;background:transparent;color:var(--lcd-ink);font-size:15px;text-align:left}
 .sug button{cursor:pointer}
 .sug button:hover,.sug button.hl{background:#f3f3f1}
 .sug button.cur{color:var(--acc-ink)}
 .sug small,.sug p{font-size:13px;color:var(--lcd-dim)}
+.sug small{white-space:nowrap}
 .shot{border-radius:10px;overflow:hidden;background:#fff;line-height:0;box-shadow:0 0 0 1px var(--line-2)}
 .shot canvas{display:block;width:100%;height:auto;aspect-ratio:1/1}
 .shot.flash{animation:flash .5s}
@@ -323,6 +335,7 @@ dialog.pop[open]::backdrop{animation:fadeIn .3s ease}
           <div class="tfoot">
             <button type="button" class="ghost" id="btnNewProd">+ produk baru</button>
             <span class="hint">atau tarik foto ke halaman ini</span>
+            <span class="hint" id="libStatus" hidden></span><button type="button" class="ghost" id="btnLib" hidden>segarkan Drive</button>
           </div>
         </div>
 
@@ -651,7 +664,7 @@ function fixVi(p){
 }
 function addProduct(){
   var p = newProduct(), ref = active() || state.items[0];
-  if (state.sameAll && ref){ p.oldN = ref.oldN; p.newN = ref.newN; p.sFrom = ref.sFrom; p.sTo = ref.sTo; }
+  if (state.sameAll && ref && !ref.isSample){ p.oldN = ref.oldN; p.newN = ref.newN; p.sFrom = ref.sFrom; p.sTo = ref.sTo; }
   state.items.push(p); mountRow(p); renumber();
   return p;
 }
@@ -1057,6 +1070,172 @@ function readPrefs(){
   try { return JSON.parse(localStorage.getItem(LS_KEY) || '{}') || {}; } catch(e){ return {}; }
 }
 
+/* ---------- pustaka Google Drive (opsional, diisi lewat window.COVER_CONFIG) ---------- */
+var lib = { items: [], status: 'off', msg: '' };
+var sugList = [];
+function libCfg(){
+  var c = window.COVER_CONFIG || {};
+  var raw = String(c.driveFolderId || '').trim(), m = /folders\/([\w-]+)/.exec(raw);
+  return { key: String(c.driveApiKey || '').trim(), folder: m ? m[1] : raw.replace(/[?#].*$/, '') };
+}
+function driveOn(){ var c = libCfg(); return !!(c.key && c.folder); }
+function driveErr(status, j){
+  var hint = status === 400 ? 'API key tidak valid.'
+    : status === 403 ? 'Akses ditolak. Pastikan Drive API aktif dan pembatasan API key cocok dengan alamat web ini.'
+    : status === 404 ? 'Folder tidak ditemukan. Pastikan folder dibagikan ke "Siapa saja yang memiliki link".'
+    : 'Gagal membaca Drive.';
+  var d = j && j.error && j.error.message ? ' (' + String(j.error.message).slice(0, 90) + ')' : '';
+  return 'Drive ' + status + ': ' + hint + d;
+}
+async function driveFetch(url){
+  var r;
+  try { r = await fetch(url); }
+  catch(e){ throw new Error('Tidak bisa terhubung ke Google Drive. Periksa koneksi atau pembatasan API key.'); }
+  if (!r.ok){ var j = null; try { j = await r.json(); } catch(e){} throw new Error(driveErr(r.status, j)); }
+  return r;
+}
+/* KODE_1.png, KODE_2.png: bagian setelah garis bawah terakhir (1-2 angka) adalah nomor warna */
+function parseName(name){
+  var base = name.replace(/\.[^.]+$/, '').trim(), m = /^(.+?)_(\d{1,2})$/.exec(base);
+  return m ? { code: m[1].trim(), n: +m[2] } : { code: base, n: 1 };
+}
+async function loadLibrary(){
+  var c = libCfg();
+  if (!c.key || !c.folder){ lib.status = 'off'; syncLib(); return; }
+  lib.status = 'loading'; syncLib();
+  try {
+    var files = [], token = '';
+    do {
+      var q = "'" + c.folder + "' in parents and trashed = false and mimeType contains 'image/'";
+      var url = 'https://www.googleapis.com/drive/v3/files?q=' + encodeURIComponent(q) +
+        '&fields=' + encodeURIComponent('nextPageToken,files(id,name,mimeType)') +
+        '&pageSize=1000&supportsAllDrives=true&includeItemsFromAllDrives=true&key=' + encodeURIComponent(c.key) +
+        (token ? '&pageToken=' + encodeURIComponent(token) : '');
+      var j = await (await driveFetch(url)).json();
+      files = files.concat(j.files || []); token = j.nextPageToken || '';
+    } while (token);
+    var map = {};
+    files.forEach(function(f){
+      var pn = parseName(f.name); if (!pn.code) return;
+      var k = pn.code.toLowerCase();
+      (map[k] = map[k] || { key: k, code: pn.code, files: [] }).files.push({ id: f.id, name: f.name, mime: f.mimeType, n: pn.n });
+    });
+    lib.items = Object.keys(map).map(function(k){
+      var e = map[k];
+      e.files.sort(function(a, b){ return a.n - b.n || a.name.localeCompare(b.name); });
+      e.total = e.files.length; e.files = e.files.slice(0, MAX_VAR);
+      return e;
+    }).sort(function(a, b){ return a.code.localeCompare(b.code, undefined, { numeric: true, sensitivity: 'base' }); });
+    lib.status = 'ok'; lib.msg = '';
+  } catch(e){ lib.status = 'error'; lib.msg = e.message; lib.items = []; toast(lib.msg); }
+  syncLib();
+}
+function syncLib(){
+  var on = driveOn(), st = $('#libStatus'), bt = $('#btnLib');
+  st.hidden = !on; bt.hidden = !on;
+  if (!on) return;
+  st.textContent = lib.status === 'loading' ? 'Drive: memuat daftar...' : lib.status === 'ok' ? 'Drive: ' + lib.items.length + ' kode' : 'Drive: gagal membaca';
+  bt.disabled = lib.status === 'loading';
+}
+async function loadLibCode(e){
+  var have = state.items.find(function(x){ return x.code.trim().toLowerCase() === e.key; });
+  if (have){ setActive(have.id, true); return have; }
+  var c = libCfg(), blobs = [];
+  toast('Memuat "' + e.code + '" dari Drive...');
+  try {
+    for (var k = 0; k < e.files.length; k++){
+      var f = e.files[k];
+      var r = await driveFetch('https://www.googleapis.com/drive/v3/files/' + encodeURIComponent(f.id) + '?alt=media&supportsAllDrives=true&key=' + encodeURIComponent(c.key));
+      var b = await r.blob();
+      blobs.push(new File([b], f.name, { type: f.mime || b.type }));
+    }
+  } catch(err){ toast(err.message); return null; }
+  while (state.items.length >= MAX_PROD){
+    var v = state.items.find(function(x){ return x.id !== state.activeId && x.stage === 'done'; }) || state.items.find(function(x){ return x.id !== state.activeId; });
+    if (!v) break;
+    removeProduct(v.id);
+  }
+  var p = addProduct(); p.code = e.code; p.stage = 'photos'; syncRow(p);
+  await addVariantFiles(p, blobs);
+  p.stage = p.variants.length ? 'done' : 'photos'; syncRow(p); setActive(p.id, true);
+  if (e.total > MAX_VAR) toast('"' + e.code + '" punya ' + e.total + ' foto, dipakai ' + MAX_VAR + ' yang pertama.');
+  return p;
+}
+
+/* ---------- cari kode di layar (produk yang sudah dimuat + pustaka Drive) ---------- */
+function matches(q){
+  q = q.trim().toLowerCase();
+  var all = [], have = {};
+  state.items.forEach(function(x){
+    var c = x.code.trim();
+    if (c){ have[c.toLowerCase()] = 1; all.push({ code: c, key: c.toLowerCase(), n: x.variants.length, p: x }); }
+  });
+  lib.items.forEach(function(e){ if (!have[e.key]) all.push({ code: e.code, key: e.key, n: e.files.length, e: e }); });
+  if (!q) return all.slice(0, 80);
+  var ex = [], pre = [], inc = [];
+  all.forEach(function(x){
+    if (x.key === q) ex.push(x); else if (x.key.indexOf(q) === 0) pre.push(x); else if (x.key.indexOf(q) > -1) inc.push(x);
+  });
+  return ex.concat(pre, inc).slice(0, 80);
+}
+function hideSug(){ $('#sug').hidden = true; $('#codeIn').setAttribute('aria-expanded', 'false'); hl = -1; }
+function emptyMsg(q){
+  if (lib.status === 'loading') return 'Memuat daftar dari Drive...';
+  return q ? 'Kode "' + q + '" tidak ditemukan' : 'Belum ada kode produk';
+}
+function showSug(list, msg){
+  var el = $('#sug'); sugList = list;
+  if (!list.length && !msg){ hideSug(); return; }
+  hl = -1;
+  el.innerHTML = list.length ? list.map(function(x, i){
+    var cur = x.p && x.p.id === state.activeId;
+    return '<button type="button" role="option" data-i="' + i + '" class="' + (cur ? 'cur' : '') + '"><span>' + esc(x.code) + '</span><small>' + (x.e ? 'Drive · ' : '') + x.n + ' warna</small></button>';
+  }).join('') : '<p role="status">' + esc(msg) + '</p>';
+  el.hidden = false; $('#codeIn').setAttribute('aria-expanded', 'true');
+}
+function flashShot(){ var s = $('#shot'); s.classList.remove('flash'); void s.offsetWidth; s.classList.add('flash'); }
+function pickEntry(x){
+  hideSug();
+  var ci = $('#codeIn'); ci.value = x.code; ci.blur();
+  if (x.p){ setActive(x.p.id, true); flashShot(); }
+  else loadLibCode(x.e).then(function(p){ if (p) flashShot(); });
+}
+function doSearch(){
+  var q = $('#codeIn').value, m = matches(q);
+  if (m.length){ pickEntry(m[0]); return; }
+  showSug([], emptyMsg(q.trim()));
+  var f = $('#finder'); f.classList.remove('shake'); void f.offsetWidth; f.classList.add('shake');
+}
+function moveHl(d){
+  var items = $$('#sug button'); if (!items.length) return;
+  hl = (hl + d + items.length) % items.length;
+  items.forEach(function(b, k){ b.classList.toggle('hl', k === hl); });
+  items[hl].scrollIntoView({ block: 'nearest' });
+}
+function bindSearch(){
+  var ci = $('#codeIn'), sug = $('#sug');
+  ci.addEventListener('focus', function(){ ci.select(); showSug(matches(''), emptyMsg('')); });
+  ci.addEventListener('input', function(){ var m = matches(ci.value); showSug(m, m.length ? '' : emptyMsg(ci.value.trim())); });
+  ci.addEventListener('keydown', function(e){
+    if (e.key === 'Enter'){
+      e.preventDefault();
+      var b = $$('#sug button')[hl];
+      if (b){ pickEntry(sugList[+b.dataset.i]); return; }
+      doSearch();
+    } else if (e.key === 'ArrowDown'){ e.preventDefault(); moveHl(1); }
+    else if (e.key === 'ArrowUp'){ e.preventDefault(); moveHl(-1); }
+    else if (e.key === 'Escape'){ hideSug(); ci.blur(); syncUI(); }
+  });
+  ci.addEventListener('blur', function(){ setTimeout(function(){ if (document.activeElement !== ci){ hideSug(); syncUI(); } }, 120); });
+  sug.addEventListener('mousedown', function(e){ e.preventDefault(); });
+  sug.addEventListener('click', function(e){
+    var b = e.target.closest('button'); if (b) pickEntry(sugList[+b.dataset.i]);
+  });
+  $('#btnSearch').addEventListener('mousedown', function(e){ e.preventDefault(); });
+  $('#btnSearch').addEventListener('click', function(){ if (document.activeElement === ci) doSearch(); else ci.focus(); });
+  $('#btnLib').addEventListener('click', loadLibrary);
+}
+
 /* ---------- harga dan size ---------- */
 function applyField(key, val){
   var p = active(); if (!p) return;
@@ -1081,72 +1260,6 @@ function bindFields(){
       requestRender(); toast('Harga dan size disamakan untuk semua produk.');
     }
   });
-}
-
-/* ---------- cari kode di layar ---------- */
-function matches(q){
-  q = q.trim().toLowerCase();
-  var all = state.items.filter(function(x){ return x.code.trim(); });
-  if (!q) return all;
-  var ex = [], pre = [], inc = [];
-  all.forEach(function(x){
-    var c = x.code.trim().toLowerCase();
-    if (c === q) ex.push(x); else if (c.indexOf(q) === 0) pre.push(x); else if (c.indexOf(q) > -1) inc.push(x);
-  });
-  return ex.concat(pre, inc);
-}
-function hideSug(){ $('#sug').hidden = true; $('#codeIn').setAttribute('aria-expanded', 'false'); hl = -1; }
-function showSug(list, msg){
-  var el = $('#sug');
-  if (!list.length && !msg){ hideSug(); return; }
-  hl = -1;
-  el.innerHTML = list.length ? list.map(function(x){
-    return '<button type="button" role="option" data-id="' + x.id + '" class="' + (x.id === state.activeId ? 'cur' : '') + '"><span>' + esc(x.code.trim()) + '</span><small>' + x.variants.length + ' warna</small></button>';
-  }).join('') : '<p role="status">' + esc(msg) + '</p>';
-  el.hidden = false; $('#codeIn').setAttribute('aria-expanded', 'true');
-}
-function pickProduct(p){
-  hideSug(); setActive(p.id, true);
-  var s = $('#shot'); s.classList.remove('flash'); void s.offsetWidth; s.classList.add('flash');
-  var ci = $('#codeIn'); ci.value = p.code.trim(); ci.blur();
-}
-function doSearch(){
-  var q = $('#codeIn').value, m = matches(q);
-  if (m.length){ pickProduct(m[0]); return; }
-  showSug([], q.trim() ? 'Kode "' + q.trim() + '" tidak ditemukan' : 'Belum ada kode produk');
-  var f = $('#finder'); f.classList.remove('shake'); void f.offsetWidth; f.classList.add('shake');
-}
-function moveHl(d){
-  var items = $$('#sug button'); if (!items.length) return;
-  hl = (hl + d + items.length) % items.length;
-  items.forEach(function(b, k){ b.classList.toggle('hl', k === hl); });
-}
-function bindSearch(){
-  var ci = $('#codeIn'), sug = $('#sug');
-  ci.addEventListener('focus', function(){ ci.select(); showSug(matches(''), 'Belum ada kode produk'); });
-  ci.addEventListener('input', function(){
-    var q = ci.value.trim(), m = matches(ci.value);
-    showSug(m, m.length || !q ? (q ? '' : 'Belum ada kode produk') : 'Kode "' + q + '" tidak ditemukan');
-  });
-  ci.addEventListener('keydown', function(e){
-    if (e.key === 'Enter'){
-      e.preventDefault();
-      var b = $$('#sug button')[hl];
-      if (b){ var p = state.items.find(function(x){ return x.id === b.dataset.id; }); if (p){ pickProduct(p); return; } }
-      doSearch();
-    } else if (e.key === 'ArrowDown'){ e.preventDefault(); moveHl(1); }
-    else if (e.key === 'ArrowUp'){ e.preventDefault(); moveHl(-1); }
-    else if (e.key === 'Escape'){ hideSug(); ci.blur(); syncUI(); }
-  });
-  ci.addEventListener('blur', function(){ setTimeout(function(){ if (document.activeElement !== ci){ hideSug(); syncUI(); } }, 120); });
-  sug.addEventListener('mousedown', function(e){ e.preventDefault(); });
-  sug.addEventListener('click', function(e){
-    var b = e.target.closest('button'); if (!b) return;
-    var p = state.items.find(function(x){ return x.id === b.dataset.id; });
-    if (p) pickProduct(p);
-  });
-  $('#btnSearch').addEventListener('mousedown', function(e){ e.preventDefault(); });
-  $('#btnSearch').addEventListener('click', function(){ if (document.activeElement === ci) doSearch(); else ci.focus(); });
 }
 
 /* ---------- ganti warna (rocker dan titik) ---------- */
@@ -1293,6 +1406,7 @@ async function boot(){
 
   bindDrop(); bindFields(); bindSearch(); bindColor(); bindLogos(); bindTune(); bindExport(); bindTray(); bindPop();
   syncChic(); calibrate(); renderLogoBox(); renderLogoCards();
+  loadLibrary();
   fontP = initFont();
   getDownloads().then(function(d){ if (!d) noDownload(); else syncUI(); });
 
