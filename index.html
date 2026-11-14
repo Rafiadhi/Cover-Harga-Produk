@@ -415,7 +415,7 @@ function calibrate(){
   if (a3 > 0) FS.size = T.size.asc / a3;
 }
 function fontLoaded(){
-  try { return Array.prototype.some.call(document.fonts, function(f){ return /cal sans/i.test(f.family) && f.status === 'loaded'; }); }
+  try { return Array.from(document.fonts).some(function(f){ return /cal sans/i.test(f.family) && f.status === 'loaded'; }); }
   catch(e){ return false; }
 }
 function initFont(){
