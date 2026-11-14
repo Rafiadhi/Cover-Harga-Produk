@@ -1071,6 +1071,7 @@ function readPrefs(){
 }
 
 /* ---------- pustaka Google Drive (opsional, diisi lewat window.COVER_CONFIG) ---------- */
+var FOLDER_MIME = 'application/vnd.google-apps.folder';
 var lib = { items: [], status: 'off', msg: '' };
 var sugList = [];
 function libCfg(){
@@ -1081,7 +1082,9 @@ function libCfg(){
 function driveOn(){ var c = libCfg(); return !!(c.key && c.folder); }
 function driveErr(status, j){
   var hint = status === 400 ? 'API key tidak valid.'
-    : status === 403 ? 'Akses ditolak. Pastikan Drive API aktif dan pembatasan API key cocok dengan alamat web ini.'
+    : status === 403 ? (/sufficient permissions/i.test(j && j.error && j.error.message || '')
+        ? 'Folder atau foto ini belum dibagikan ke "Siapa saja yang memiliki link".'
+        : 'Akses ditolak. Pastikan Drive API aktif dan pembatasan API key cocok dengan alamat web ini.')
     : status === 404 ? 'Folder tidak ditemukan. Pastikan folder dibagikan ke "Siapa saja yang memiliki link".'
     : 'Gagal membaca Drive.';
   var d = j && j.error && j.error.message ? ' (' + String(j.error.message).slice(0, 90) + ')' : '';
@@ -1099,33 +1102,65 @@ function parseName(name){
   var base = name.replace(/\.[^.]+$/, '').trim(), m = /^(.+?)_(\d{1,2})$/.exec(base);
   return m ? { code: m[1].trim(), n: +m[2] } : { code: base, n: 1 };
 }
+/* nama file di dalam subfolder: angka di ujung nama = nomor warna (3.jpg -> 3, foto-2.png -> 2) */
+function fileNum(name){
+  var m = /(\d{1,6})$/.exec(name.replace(/\.[^.]+$/, '').trim());
+  return m ? +m[1] : 999999;
+}
+/* isi satu folder Drive: foto dan subfolder (satu permintaan per folder, Google menolak beberapa folder sekaligus) */
+async function listKids(c, parent){
+  var out = [], token = '';
+  do {
+    var q = "'" + parent + "' in parents and trashed = false and (mimeType contains 'image/' or mimeType = '" + FOLDER_MIME + "')";
+    var url = 'https://www.googleapis.com/drive/v3/files?q=' + encodeURIComponent(q) +
+      '&fields=' + encodeURIComponent('nextPageToken,files(id,name,mimeType)') +
+      '&pageSize=1000&supportsAllDrives=true&includeItemsFromAllDrives=true&key=' + encodeURIComponent(c.key) +
+      (token ? '&pageToken=' + encodeURIComponent(token) : '');
+    var j = await (await driveFetch(url)).json();
+    out = out.concat(j.files || []); token = j.nextPageToken || '';
+  } while (token);
+  return out;
+}
+function entryFor(map, code){
+  var k = code.toLowerCase();
+  return map[k] || (map[k] = { key: k, code: code, all: [], files: [], folders: [], pending: false, total: 0 });
+}
+function refreshEntry(e){
+  e.all.sort(function(a, b){ return a.n - b.n || a.name.localeCompare(b.name, undefined, { numeric: true }); });
+  e.total = e.all.length; e.files = e.all.slice(0, MAX_VAR);
+}
+/* foto di dalam subfolder baru dibaca saat kodenya dipilih (hemat permintaan kalau kodenya ratusan) */
+function fillEntry(e){
+  if (!e.pending) return Promise.resolve();
+  if (!e.filling) e.filling = (async function(){
+    var c = libCfg();
+    for (var i = 0; i < e.folders.length; i++){
+      var kids = await listKids(c, e.folders[i]);
+      kids.forEach(function(f){ if (f.mimeType !== FOLDER_MIME) e.all.push({ id: f.id, name: f.name, mime: f.mimeType, n: fileNum(f.name) }); });
+    }
+    e.folders = []; e.pending = false; refreshEntry(e);
+  })().finally(function(){ e.filling = null; });
+  return e.filling;
+}
 async function loadLibrary(){
   var c = libCfg();
   if (!c.key || !c.folder){ lib.status = 'off'; syncLib(); return; }
   lib.status = 'loading'; syncLib();
   try {
-    var files = [], token = '';
-    do {
-      var q = "'" + c.folder + "' in parents and trashed = false and mimeType contains 'image/'";
-      var url = 'https://www.googleapis.com/drive/v3/files?q=' + encodeURIComponent(q) +
-        '&fields=' + encodeURIComponent('nextPageToken,files(id,name,mimeType)') +
-        '&pageSize=1000&supportsAllDrives=true&includeItemsFromAllDrives=true&key=' + encodeURIComponent(c.key) +
-        (token ? '&pageToken=' + encodeURIComponent(token) : '');
-      var j = await (await driveFetch(url)).json();
-      files = files.concat(j.files || []); token = j.nextPageToken || '';
-    } while (token);
-    var map = {};
-    files.forEach(function(f){
-      var pn = parseName(f.name); if (!pn.code) return;
-      var k = pn.code.toLowerCase();
-      (map[k] = map[k] || { key: k, code: pn.code, files: [] }).files.push({ id: f.id, name: f.name, mime: f.mimeType, n: pn.n });
+    var root = await listKids(c, c.folder), map = {};
+    root.forEach(function(f){
+      if (f.mimeType === FOLDER_MIME){
+        /* subfolder: namanya = kode, isinya = foto warna */
+        var nm = f.name.trim(); if (!nm) return;
+        var fe = entryFor(map, nm); fe.folders.push(f.id); fe.pending = true;
+      } else {
+        /* foto lepas di folder utama: KODE_1.png, KODE_2.png */
+        var pn = parseName(f.name); if (!pn.code) return;
+        entryFor(map, pn.code).all.push({ id: f.id, name: f.name, mime: f.mimeType, n: pn.n });
+      }
     });
-    lib.items = Object.keys(map).map(function(k){
-      var e = map[k];
-      e.files.sort(function(a, b){ return a.n - b.n || a.name.localeCompare(b.name); });
-      e.total = e.files.length; e.files = e.files.slice(0, MAX_VAR);
-      return e;
-    }).sort(function(a, b){ return a.code.localeCompare(b.code, undefined, { numeric: true, sensitivity: 'base' }); });
+    lib.items = Object.keys(map).map(function(k){ var e = map[k]; refreshEntry(e); return e; })
+      .sort(function(a, b){ return a.code.localeCompare(b.code, undefined, { numeric: true, sensitivity: 'base' }); });
     lib.status = 'ok'; lib.msg = '';
   } catch(e){ lib.status = 'error'; lib.msg = e.message; lib.items = []; toast(lib.msg); }
   syncLib();
@@ -1143,6 +1178,8 @@ async function loadLibCode(e){
   var c = libCfg(), blobs = [];
   toast('Memuat "' + e.code + '" dari Drive...');
   try {
+    await fillEntry(e);
+    if (!e.files.length){ toast('"' + e.code + '" belum berisi foto di Drive.'); return null; }
     for (var k = 0; k < e.files.length; k++){
       var f = e.files[k];
       var r = await driveFetch('https://www.googleapis.com/drive/v3/files/' + encodeURIComponent(f.id) + '?alt=media&supportsAllDrives=true&key=' + encodeURIComponent(c.key));
@@ -1189,7 +1226,7 @@ function showSug(list, msg){
   hl = -1;
   el.innerHTML = list.length ? list.map(function(x, i){
     var cur = x.p && x.p.id === state.activeId;
-    return '<button type="button" role="option" data-i="' + i + '" class="' + (cur ? 'cur' : '') + '"><span>' + esc(x.code) + '</span><small>' + (x.e ? 'Drive · ' : '') + x.n + ' warna</small></button>';
+    return '<button type="button" role="option" data-i="' + i + '" class="' + (cur ? 'cur' : '') + '"><span>' + esc(x.code) + '</span><small>' + (x.e && x.e.pending && !x.n ? 'Drive · folder' : (x.e ? 'Drive · ' : '') + x.n + ' warna') + '</small></button>';
   }).join('') : '<p role="status">' + esc(msg) + '</p>';
   el.hidden = false; $('#codeIn').setAttribute('aria-expanded', 'true');
 }
