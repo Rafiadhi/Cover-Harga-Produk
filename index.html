@@ -698,6 +698,7 @@ function makeThumbURL(it){
 var MAX_PROD = 5, MAX_VAR = 4;
 var state = { items: [], activeId: null, logos: { 1: null, 2: null }, logoActive: 1, logoScale: 1, fmt: 'png', size: 1200, dl: undefined, sameAll: true, tray: false, modalId: null };
 var seq = 0, raf = 0, tolT = 0, toastT = 0, hl = -1, fontP = Promise.resolve();
+var logosReadyRes, logosReady = new Promise(function(r){ logosReadyRes = r; });
 var DEFAULT_LOGO = { canvas: null, url: LOGO_DEFAULT, isDefault: true };
 
 function active(){ return state.items.find(function(p){ return p.id === state.activeId; }) || null; }
@@ -1003,12 +1004,15 @@ function renderLogoCards(){
 }
 function refreshLogos(swap){ renderLogoBox(swap); renderLogoCards(); savePrefs(); requestRender(); }
 function openLogoPicker(slot){ var f = $('#logoInput'); f.dataset.slot = slot; f.click(); }
+async function makeLogo(blob){
+  var work = await fileToWork(blob, 1600);
+  var r = processImage(work, true, 22);
+  var c = shrink(r.canvas, 900);
+  return { canvas: c, url: c.toDataURL('image/png'), isDefault: false };
+}
 async function setLogoFile(slot, file){
   try {
-    var work = await fileToWork(file, 1600);
-    var r = processImage(work, true, 22);
-    var c = shrink(r.canvas, 900);
-    state.logos[slot] = { canvas: c, url: c.toDataURL('image/png'), isDefault: false };
+    state.logos[slot] = await makeLogo(file);
     state.logoActive = slot;
     refreshLogos(true);
     toast('Logo ' + slot + ' dipakai.');
@@ -1127,8 +1131,8 @@ function toast(t){
 function savePrefs(){
   try {
     localStorage.setItem(LS_KEY, JSON.stringify({
-      l1: state.logos[1] && !state.logos[1].isDefault ? state.logos[1].url : null,
-      l2: state.logos[2] ? state.logos[2].url : null,
+      l1: state.logos[1] && !state.logos[1].isDefault && !state.logos[1].drive ? state.logos[1].url : null,
+      l2: state.logos[2] && !state.logos[2].drive ? state.logos[2].url : null,
       active: state.logoActive, scale: state.logoScale, fmt: state.fmt, size: state.size
     }));
   } catch(e){}
@@ -1214,23 +1218,51 @@ async function loadLibrary(){
   if (!c.key || !c.folder){ lib.status = 'off'; syncLib(); return; }
   lib.status = 'loading'; syncLib();
   try {
-    var root = await listKids(c, c.folder), map = {};
+    var root = await listKids(c, c.folder), map = {}, logoFolder = '', logoLoose = [];
     root.forEach(function(f){
       if (f.mimeType === FOLDER_MIME){
-        /* subfolder: namanya = kode, isinya = foto warna */
+        /* subfolder: namanya = kode, isinya = foto warna. Folder bernama LOGO = logo toko, bukan kode */
         var nm = f.name.trim(); if (!nm) return;
+        if (nm.toUpperCase() === 'LOGO'){ logoFolder = f.id; return; }
         var fe = entryFor(map, nm); fe.folders.push(f.id); fe.pending = true;
       } else {
-        /* foto lepas di folder utama: KODE_1.png, KODE_2.png */
+        /* foto lepas di folder utama: KODE_1.png, KODE_2.png. File LOGO.png / LOGO_1.png / LOGO_2.png = logo toko */
         var pn = parseName(f.name); if (!pn.code) return;
+        if (pn.code.toUpperCase() === 'LOGO'){ logoLoose.push({ id: f.id, name: f.name, mime: f.mimeType }); return; }
         entryFor(map, pn.code).all.push({ id: f.id, name: f.name, mime: f.mimeType, n: pn.n });
       }
     });
     lib.items = Object.keys(map).map(function(k){ var e = map[k]; refreshEntry(e); return e; })
       .sort(function(a, b){ return a.code.localeCompare(b.code, undefined, { numeric: true, sensitivity: 'base' }); });
     lib.status = 'ok'; lib.msg = '';
+    syncLib();
+    if (logoFolder || logoLoose.length) await loadDriveLogos(c, logoFolder, logoLoose);
+    return;
   } catch(e){ lib.status = 'error'; lib.msg = e.message; lib.items = []; toast(lib.msg); }
   syncLib();
+}
+/* logo toko dari Drive: 1-2 gambar di folder LOGO (urut angka di nama, lalu nama). Orang lain otomatis ikut memakainya */
+async function loadDriveLogos(c, folderId, loose){
+  try {
+    var files = loose.slice();
+    if (folderId){
+      (await listKids(c, folderId)).forEach(function(f){
+        if (f.mimeType !== FOLDER_MIME) files.push({ id: f.id, name: f.name, mime: f.mimeType });
+      });
+    }
+    files.sort(function(a, b){ return fileNum(a.name) - fileNum(b.name) || a.name.localeCompare(b.name, undefined, { numeric: true }); });
+    files = files.slice(0, 2);
+    if (!files.length) return;
+    await Promise.race([logosReady, new Promise(function(r){ setTimeout(r, 6000); })]);
+    for (var i = 0; i < files.length; i++){
+      var r = await driveFetch('https://www.googleapis.com/drive/v3/files/' + encodeURIComponent(files[i].id) + '?alt=media&supportsAllDrives=true&key=' + encodeURIComponent(c.key));
+      var L = await makeLogo(await r.blob());
+      L.drive = true;
+      state.logos[i + 1] = L;
+    }
+    if (!state.logos[state.logoActive]) state.logoActive = 1;
+    renderLogoBox(); renderLogoCards(); requestRender();
+  } catch(e){ toast('Logo dari Drive gagal dimuat: ' + e.message); }
 }
 function syncLib(){
   var on = driveOn(), st = $('#libStatus'), bt = $('#btnLib');
@@ -1532,6 +1564,7 @@ async function boot(){
   if (pf.l2){ try { state.logos[2] = { canvas: toWork(await loadImg(pf.l2), 1000), url: pf.l2, isDefault: false }; } catch(e){} }
   if (!state.logos[state.logoActive]) state.logoActive = 1;
   renderLogoBox(); renderLogoCards(); requestRender();
+  logosReadyRes();
 }
 boot();
 
